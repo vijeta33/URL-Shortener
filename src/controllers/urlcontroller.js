@@ -1,9 +1,8 @@
-const urlModel = require("../models/urlShortModel");
-const shortId = require("shortid");
-const { response } = require("express");
-
+const urlModel = require("../models/urlModel")
+const shortid = require('shortid');
+const baseUrl = 'http://localhost:3000'
+const validUrl = require('valid-url')
 const redis = require("redis");
-
 const { promisify } = require("util");
 
 //Connect to redis
@@ -18,138 +17,86 @@ redisClient.auth("LpxuQlBSMm7MFYavCb9WaXgPzK7s7NjL", function (err) {
 
 redisClient.on("connect", async function () {
   console.log("Connected to Redis..");
-});
-
-//1. connect to the server
-//2. use the commands :
-
-//Connection setup for redis
+})
 
 const SET_ASYNC = promisify(redisClient.SET).bind(redisClient);
 const GET_ASYNC = promisify(redisClient.GET).bind(redisClient);
 
-const isValid = function (value) {
-  if (typeof value === "undefined" || value === null) return false;
-  if (typeof value === "string" && value.trim().length === 0) return false;
-  return true;
-};
+//Post Api to Create Longer to Shorten URL...
+const createUrl = async function(req, res) {
+    try {
+        if (!(Object.keys(req.body).length > 0)) { // Checking Body is not Empty
+            res.status(400).send("No Url Found")
+        }
 
-const isValidRequestBody = function (requestBody) {
-  return Object.keys(requestBody).length > 0;
-};
+        const longUrl = req.body.longUrl.trim();
 
-const shortenUrl = async function (req, res) {
-  try {
-    const requestBody = req.body;
+        //validation start
+        if (!/(ftp|http|https):\/\/(\w+:{0,1}\w*@)?(\S+)(:[0-9]+)?(\/|\/([\w#!:.?+=&%@!\-/]))?/.test(longUrl)) {
+            if (!/(.com|.org|.co.in|.in|.co|.us)/.test(longUrl)) 
+        return res.status(400).send({ status: false, message: `This is not a valid Url` });
+    }
+    if (!(longUrl.includes('//'))) {
+       return res.status(400).send({ status: false, msg: 'Invalid longUrl' })
+     }
 
-    if (!isValidRequestBody(requestBody)) {
-      return res.status(400).send({
-        status: false,
-        message: "Invalid request parameters. Please provide URL details",
-      });
+     
+  //validation end
+
+        if (validUrl.isUri(longUrl)) { //used  valid url package
+            const shortCode = shortid.generate();
+            let checkUrl = await urlModel.findOne({ longUrl: longUrl })
+            if (checkUrl) {
+                return res.send({ message: " You already created Short Url for this Long Url :", data: checkUrl })
+
+            } else {
+                const shortUrl = baseUrl + '/' + shortCode;
+                const storedData = { longUrl, shortUrl, urlCode: shortCode }
+                let savedData = await urlModel.create(storedData)
+                res.status(200).send({ status: true, data: savedData })
+            }
+        } else {
+            return res.status(400).send({ status: false, message: "Invalid Long Url" })
+        }
+    } catch (err) {
+        res.status(500).send(err.message);
     }
 
-    let longUrl = req.body.longUrl;
+}
 
-    if (!isValid(longUrl)) {
-      return res
-        .status(400)
-        .send({ status: false, message: "Please provide Long URL" });
+//This is my Second Get API to redirect from short url to Corresponding Long url
+const getUrl = async function(req, res) {
+    try {
+
+        let urlCode = req.params.urlCode
+            
+        const getAsync = await GET_ASYNC(`${urlCode}`)
+        if (getAsync) {
+            const parseData = JSON.parse(getAsync)
+            console.log("Data Fetch")
+                
+            return res.redirect(parseData.longUrl)
+        } else if (urlCode) {
+          
+            const Findurl = await urlModel.findOne({ urlCode: urlCode })
+              
+            if (Findurl) {
+                const storeCacheData = await SET_ASYNC(`${urlCode}`, JSON.stringify(Findurl))
+                console.log("Data Got Stored", storeCacheData)
+                return res.status(302).redirect(Findurl.longUrl)
+
+            } else {
+                res.status(400).send({ status: false, message: "There is No Short Url Found" })
+            }
+        } else {
+            return res.status(404).send({ status: false, message: "No Url Code Params Found" })
+        }
+
+
+    } catch (err) {
+        res.status(500).send(err.message);
     }
-    if(!/(ftp|http|https|HTTP|HTTPS):\/\/(\w+:{0,1}\w*@)?(\S+)(:[0-9]+)?(\/|\/([\w#!:.?+=&%@!\-/]))?/.test(longUrl)){
-    return res.status(400).send({status: false,message: "Invalid URL. Please provide correct URL"});
-    }
-    if (!/[(http(s)?):\/\/(www\.)?a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)/.test(longUrl)) {
-      return res.status(400).send({
-        status: false,
-        message: "Invalid URL. Please provide correct URL",
-      });
-    }
-    // if (!/(.com|.org|.co.in|.in|.co|.us)/.test(longUrl)) {
-    //   return res.send({ status: false, message: "Invalid URL. Please provide correct URL" });
-    // }
-    const urlTrim = longUrl.trim();
-    const urlval = urlTrim
-      .split("")
-      .map((a) => a.trim())
-      .join("");
-    
-    const isAlreadyReg = await urlModel.findOne({longUrl})
-    if(isAlreadyReg){
-      res.status(201).send({ data: isAlreadyReg });
-    }
-    function makeid(length) {
-      var result = "";
-      var characters = "abcdefghijklmnopqrstuvwxyz";
-      var charactersLength = characters.length;
-      for (var i = 0; i < length; i++) {
-        result += characters.charAt(
-          Math.floor(Math.random() * charactersLength)
-        );
-      }
-      return result;
-    }
+}
 
-    let urlCode = makeid(9);
-    let checkUrlCode = await urlModel.findOne({ urlCode: urlCode });
-    // const urlCode = shortId.generate();
-    if (checkUrlCode) {
-      urlCode = makeid(9);
-    }
 
-    const shortUrl = `http://localhost:3000/${urlCode}`;
-    const data = {};
-    data["longUrl"] = urlval;
-    data["shortUrl"] = shortUrl;
-    data["urlCode"] = urlCode;
-
-    let cachedUrlData = await GET_ASYNC(`${urlval}`);
-    if (cachedUrlData) {
-      res.send(cachedUrlData);
-    } else {
-      let profile = await urlModel.create(data);
-      await SET_ASYNC(`${urlval}`, JSON.stringify(profile));
-      await SET_ASYNC(`${urlCode}`, JSON.stringify(profile));
-      res.status(201).send({ data: profile });
-    }
-  } catch (err) {
-    console.log(err.message);
-    res.status(500).send({ msg: "Some error occured" });
-  }
-};
-
-const redirectUrl = async function (req, res) {
-  try {
-    const urlData = req.params.urlCode;
-
-    const urlCode = urlData
-      .split("")
-      .map((a) => a.trim())
-      .join("");
-
-    let cachedUrlDataTwo = await GET_ASYNC(`${urlCode}`);
-    let cachedUrlDataThree = JSON.parse(cachedUrlDataTwo)
-    if (cachedUrlDataThree) { 
-      res.redirect(307, cachedUrlDataThree['longUrl']);
-    } else {
-      let validData = await urlModel
-        .findOne({ urlCode: urlCode })
-        .select({ longUrl: 1 });
-
-      if (!validData) {
-        return res
-          .status(400)
-          .send({ status: false, message: "Please provide a valid URL Code" });
-      }
-
-      await SET_ASYNC(`${urlCode}`, JSON.stringify(validData));
-      res.redirect(307, validData.longUrl);
-    }
-
-  } catch (err) {
-    res.status(500).send({ status: false, message: err.message });
-  }
-};
-
-module.exports.shortenUrl = shortenUrl;
-module.exports.redirectUrl = redirectUrl;
+module.exports = {createUrl,getUrl}
